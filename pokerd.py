@@ -24,12 +24,13 @@ CLUBS       = chr(9827) # Character 9827 is '♣'.
 # Classes
 
 class PokerDealerState(enum.Enum):
-    WAITING   = 0
-    SHUFFLING = 1
-    DEALING   = 2
-    FLOP      = 3
-    TURN      = 4
-    RIVER     = 5
+    WAITING   = enum.auto()
+    SHUFFLING = enum.auto()
+    DEALING   = enum.auto()
+    FLOP      = enum.auto()
+    BET1      = enum.auto()
+    TURN      = enum.auto()
+    RIVER     = enum.auto()
 
 class PokerCard:
     RANK = {
@@ -64,8 +65,9 @@ class PokerDealer:
         self.host    = host
         self.port    = port
         self.state   = PokerDealerState.WAITING
-        self.players = 0
+        self.players = []
         self.deck    = PokerDeck()
+        self.table   = []
 
     async def run(self):
         self.server = await asyncio.start_server(
@@ -81,60 +83,108 @@ class PokerDealer:
             await self.server.serve_forever()
 
 class PokerPlayer:
-    def __init__(self, dealer):
-        self.dealer = dealer
 
-    async def handle_client(self, reader, writer):
-        dealer = self.dealer
-        keep_playing = True
+    def __init__(self, address):
+        self.hand    = []
+        self.address = address
 
-        address = ':'.join(map(str, writer.get_extra_info('peername')))
-        logging.info('Player %s connected!', address)
+    @staticmethod
+    async def handle_client(dealer, reader, writer):
+        player = PokerPlayer(':'.join(map(str, writer.get_extra_info('peername'))))
+        logging.info('Player %s connected!', player.address)
 
-        while keep_playing:
-            # 1. Check if game is already in progress
-            while dealer.state != PokerDealerState.WAITING:
-                writer.write('\rWaiting for next round...'.encode())
-                await writer.drain()
-                await asyncio.sleep(1)
+        try:
+            keep_playing = True
 
-            # 2. Check if we have enough players (> 1)
-            dealer.players += 1
-            while dealer.players < 2:
-                writer.write('\rWaiting for more players...'.encode())
-                await writer.drain()
-                await asyncio.sleep(1)
+            while keep_playing:
+                # 1. Check if game is already in progress
+                while dealer.state != PokerDealerState.WAITING:
+                    writer.write('\r[W] Waiting for next round...'.encode())
+                    await writer.drain()
+                    await asyncio.sleep(1)
 
-            writer.write(f'\nThere are now {dealer.players} players\n'.encode())
-            await writer.drain()
+                # 2. Check if we have enough players (> 1)
+                dealer.players.append(player)
+                while len(dealer.players) < 2:
+                    writer.write('\r[W] Waiting for more players...'.encode())
+                    await writer.drain()
+                    await asyncio.sleep(1)
 
-            # 3. Have dealer shuffle
-            if dealer.state == PokerDealerState.WAITING:
-                dealer.deck.shuffle()
-                dealer.state = PokerDealerState.DEALING
-
-            # 4. Get cards
-            hand = []
-            while len(hand) < 2:
-                writer.write('\rReceiving hand...'.encode())
+                writer.write(f'\n[W] There are now {len(dealer.players)} players\n'.encode())
                 await writer.drain()
 
-                hand.append(dealer.deck.deal())
-                await asyncio.sleep(1)
+                # 3. Have dealer shuffle
+                if dealer.state == PokerDealerState.WAITING:
+                    dealer.deck.shuffle()
+                    dealer.state = PokerDealerState.DEALING
 
-            writer.write(f'\nYour cards: {", ".join(map(str, hand))}\n'.encode())
-            await writer.drain()
+                # 4. Get cards
+                while len(player.hand) < 2:
+                    writer.write('\r[D] Receiving hand...'.encode())
+                    await writer.drain()
 
-            dealer.players -= 1
-            keep_playing = False
+                    player.hand.append(dealer.deck.deal())
+                    await asyncio.sleep(1)
 
-        dealer.state = PokerDealerState.WAITING
-        writer.close()
+                writer.write(f'\n[D] Your cards: {", ".join(map(str, player.hand))}\n'.encode())
+                await writer.drain()
+
+                # 5. Get flop
+                if dealer.state == PokerDealerState.DEALING:
+                    writer.write('\n[F] Burning...'.encode())
+                    burn = dealer.deck.deal()
+
+                    writer.write('\n[F] Dealing Flop...'.encode())
+                    dealer.table = [dealer.deck.deal() for _ in range(3)]
+                    dealer.state = PokerDealerState.FLOP
+                    dealer.ready = 0
+
+                writer.write(f'\n[F] Table cards: {", ".join(map(str, dealer.table))}\n'.encode())
+                await writer.drain()
+
+                # 6. Fold or not?
+                response = None
+                while not response:
+                    writer.write('\n[B] (F)old or (S)tand? '.encode())
+                    await writer.drain()
+                    response = (await reader.readline()).decode().strip().lower()
+
+                if response == 'f':
+                    raise ConnectionResetError
+
+                dealer.ready += 1
+
+                # 7. Wait for other players
+                while dealer.ready < len(dealer.players):
+                    writer.write('\r[B] Waiting for other players...? '.encode())
+                    await writer.drain()
+                    await asyncio.sleep(1)
+
+                # X. Place holder
+                logging.info('Show all cards')
+                for other in dealer.players:
+                    if player == other:
+                        continue
+
+                    writer.write(f'\n[X] Player {other.address} has: {", ".join(map(str, other.hand))}'.encode())
+                    await writer.drain()
+
+                writer.write(f'\n[X] Round Over!\n'.encode())
+                await writer.drain()
+                await asyncio.sleep(5)
+
+                dealer.players.remove(player)
+                dealer.state = PokerDealerState.WAITING
+        except ConnectionResetError:
+            pass
+        finally:
+            dealer.players.remove(player)
+            dealer.state = PokerDealerState.WAITING
+            writer.close()
 
     @staticmethod
     def make_client_handler(dealer):
-        poker_player = PokerPlayer(dealer)
-        return poker_player.handle_client
+        return lambda writer, reader: PokerPlayer.handle_client(dealer, writer, reader)
 
 # Functions
 
