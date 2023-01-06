@@ -6,6 +6,7 @@
 '''
 
 import asyncio
+import collections
 import dataclasses
 import enum
 import logging
@@ -239,8 +240,18 @@ class PokerPlayer:
                 seconds += 1
 
             await self.write_lines('')
+            winner_score = 0
             for player in self.dealer.players:
-                await self.write_lines(f'Player {player.address} had: {", ".join(map(str, player.hand))}')
+                player_score = score_hand(player.hand, self.dealer.table)
+                winner_score = max(winner_score, player_score)
+                await self.write_lines(
+                    f'Player {player.address} had: {"".join(map(str, player.hand))} (Score: {player_score})'
+                )
+
+            if winner_score == score_hand(self.hand, self.dealer.table):
+                await self.write_lines('\nYou are the winner!')
+            else:
+                await self.write_lines('\nYou lost...')
 
     async def wait_for_turn(self):
         self.state = PokerState.LOBBY
@@ -274,6 +285,28 @@ class PokerPlayer:
     @staticmethod
     def make_client_handler(dealer):
         return lambda writer, reader: PokerPlayer.handle_client(dealer, writer, reader)
+
+
+# Functions
+
+def score_hand(hand, table):
+    # 10. High Card (2-14)
+    ranks = [c.rank for c in hand]
+    score = max(ranks)
+
+    # 9, 8, 7. Pair, Two Pair, Three of a Kind
+    rank_counts = collections.Counter(c.rank for c in hand + table)
+    for rank, count in sorted(rank_counts.items()):
+        if rank in ranks:       # Note: disregard combos from only the table
+            if count == 2:      # Pairs:            22 - 34
+                if score < 20:
+                    score = 20 + rank
+                else:           # Two Pair:         42 - 54
+                    score = 40 + rank
+            elif count == 3:    # Three of kind:    62 - 74
+                score = 60 + rank
+
+    return score
 
 # Main Execution
 
