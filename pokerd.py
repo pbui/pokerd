@@ -268,7 +268,7 @@ class PokerPlayer:
         await self.write_lines(f'        Your cards: {"".join(map(str, self.hand))}')
 
     async def wait_for_call(self, next_state):
-        response = await self.read_response('Choose an action: (F)old or (C)all')
+        response = await self.read_response('Choose an action: (F)old or (C)heck')
 
         if response == 'f':
             self.state = PokerState.FOLD
@@ -289,15 +289,21 @@ class PokerPlayer:
 
     async def score_hands(self):
         await self.write_lines(f'\n       Table cards: {"".join(map(str, self.dealer.table))}')
-        winner_score = 0
-        for player in self.dealer.players:
+        players = sorted(self.dealer.players,
+                key = lambda p: (
+                    score_hand(p.hand, self.dealer.table),
+                    max(p.hand, key=lambda c: c.rank),
+                    min(p.hand, key=lambda c: c.rank)
+                ),
+                reverse = True
+        )
+        for player in players:
             player_score = score_hand(player.hand, self.dealer.table)
-            winner_score = max(winner_score, player_score)
             await self.write_lines(
                 f'{player.name:>10}\'s cards: {"".join(map(str, player.hand))} (Score: {player_score})'
             )
 
-        if winner_score == score_hand(self.hand, self.dealer.table):
+        if players[0] == self:
             self.wins += 1
             await self.write_lines('\nYou are the winner!')
         else:
@@ -380,15 +386,10 @@ def score_hand(hand, table):
                 score = 140 + rank
 
     # 6. Straight
-    all_ranks = sorted(c.rank for c in hand + table)
+    all_ranks = sorted(set(c.rank for c in hand + table))
     for base in range(0, len(all_ranks) - 4):           # Straight: 80 - 94
-        straight = True
-        in_ranks = all_ranks[base] in ranks
-        for index in range(1, 5):
-            in_ranks |= all_ranks[base + index] in ranks
-            if all_ranks[base + index] - all_ranks[base + index - 1] > 1:
-                straight = False
-
+        straight = all_ranks[base:base + 5] == list(range(all_ranks[base], all_ranks[base] + 5))
+        in_ranks = any(rank in ranks for rank in all_ranks[base:base + 5])
         if straight and in_ranks:
             score = 80 + all_ranks[base + 4]
 
