@@ -167,6 +167,7 @@ class PokerPlayer:
         self.state   = PokerState.LOBBY
         self.address = ':'.join(map(str, writer.get_extra_info('peername')))
         self.name    = f'Player {self.address}'
+        self.wins    = 0
 
     # I/O Methods
 
@@ -215,7 +216,9 @@ class PokerPlayer:
         while not all(player.state == PokerState.HAND for player in self.dealer.players):
             await asyncio.sleep(1)
 
-        await self.write_lines(f'\nTable has {len(self.dealer.players)} players')
+        await self.write_lines(f'\nTable has {len(self.dealer.players)} players\n')
+        for player in self.dealer.players:
+            await self.write_lines(f'{player.name:>18}: {player.wins} wins')
 
     async def wait_for_hand(self):
         await self.write_lines('\nDealing hand...')
@@ -295,6 +298,7 @@ class PokerPlayer:
             )
 
         if winner_score == score_hand(self.hand, self.dealer.table):
+            self.wins += 1
             await self.write_lines('\nYou are the winner!')
         else:
             await self.write_lines('\nYou lost...')
@@ -355,36 +359,42 @@ def score_hand(hand, table):
     score = ranks[-1]
 
     # 9, 8, 7, 4, 3. Pair, Two Pair, Three of a Kind, Full House, Four of a Kind
-    rank_counts = collections.Counter(c.rank for c in hand + table)
+    rank_counts  = collections.Counter(c.rank for c in hand + table)
+    pair_counts  = 0
+    three_counts = 0
     for rank, count in sorted(rank_counts.items()):
-        if rank in ranks:       # Note: disregard combos from only the table
+        if rank in ranks:           # Note: disregard combos from only the table
             if count == 2:
-                if score < 20:  # Pairs:            22 - 34
+                if not pair_counts:                     # Pair:             20 - 34
                     score = 20 + rank
-                else:           # Two Pair:         42 - 54
+                else:                                   # Two Pair:         42 - 54
                     score = 40 + rank
+                pair_counts += 1
             elif count == 3:
-                if score < 20:  # Three of kind:    62 - 74
+                if not pair_counts and not three_counts:# Three of kind:    62 - 74
                     score = 60 + rank
-                else:           # Full house:       120 - 134
+                else:                                   # Full house:       120 - 134
                     score = 120 + rank
-            elif count == 4:    # Four of a kind:   140 - 154
+                three_counts += 1
+            elif count == 4:                            # Four of a kind:   140 - 154
                 score = 140 + rank
 
     # 6. Straight
     all_ranks = sorted(c.rank for c in hand + table)
-    for base in range(0, len(all_ranks) - 4):      # Straight: 80 - 94
+    for base in range(0, len(all_ranks) - 4):           # Straight: 80 - 94
         straight = True
+        in_ranks = all_ranks[base] in ranks
         for index in range(1, 5):
+            in_ranks |= all_ranks[base + index] in ranks
             if all_ranks[base + index] - all_ranks[base + index - 1] > 1:
                 straight = False
 
-        if straight:
+        if straight and in_ranks:
             score = 80 + all_ranks[base + 4]
 
     # 5. Flush
     suit_counts = collections.Counter(c.suit for c in hand + table)
-    for suit, count in suit_counts.items():         # Flush: 100 - 114
+    for suit, count in suit_counts.items():             # Flush: 100 - 114
         if suit in suits and count >= 5:
             score = 100
 
